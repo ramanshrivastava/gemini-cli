@@ -1,18 +1,22 @@
 /**
  * Mini Gemini CLI - Entry Point
  *
- * Phase 1: Chat with tools
+ * Phase 2: Agentic orchestration
  * - Read API key from environment
  * - Create GeminiClient with tool support
- * - REPL with function calling
+ * - AgentExecutor with while(true) loop
+ * - Multi-turn task completion
  *
  * Usage:
  *   GEMINI_API_KEY=your_key npm start
  */
 
 import { GeminiClient } from './client.js';
-import { ToolRegistry } from './tools/registry.js';
+import { AgentExecutor } from './agent/executor.js';
+import type { AgentConfig } from './agent/types.js';
 import { ReadFileTool } from './tools/read-file.js';
+import { WriteFileTool } from './tools/write-file.js';
+import { CompleteTaskTool } from './tools/complete-task.js';
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 
@@ -28,21 +32,32 @@ async function main() {
   // Create client
   const client = new GeminiClient({ apiKey });
 
-  // Set up tool registry
-  const registry = new ToolRegistry();
-  registry.register(new ReadFileTool());
+  // Set up agent config with tools
+  const agentConfig: AgentConfig = {
+    maxTurns: 20,
+    maxTimeMinutes: 5,
+    tools: [
+      new ReadFileTool(),
+      new WriteFileTool(),
+      new CompleteTaskTool(),
+    ],
+  };
 
-  console.log('Mini Gemini CLI - Phase 1: Chat with Tools');
-  console.log(`Available tools: ${registry.listAll().map(t => t.schema.name).join(', ')}`);
-  console.log('Type your message and press Enter');
+  // Create agent executor
+  const executor = new AgentExecutor(client, agentConfig);
+
+  console.log('Mini Gemini CLI - Phase 2: Agentic Orchestration');
+  console.log(`Available tools: ${agentConfig.tools.map(t => t.schema.name).join(', ')}`);
+  console.log('Type your task and press Enter');
+  console.log('The agent will work autonomously until completion\n');
   console.log('Type "exit" to quit\n');
 
   // Create readline interface
   const rl = readline.createInterface({ input, output });
 
-  // REPL with tool support
+  // REPL with agent executor
   while (true) {
-    const userInput = await rl.question('You: ');
+    const userInput = await rl.question('Task: ');
 
     if (userInput.toLowerCase() === 'exit') {
       console.log('Goodbye!');
@@ -55,66 +70,17 @@ async function main() {
     }
 
     try {
-      // Send message with tools
-      const tools = registry.getFunctionDeclarations();
-      const response = await client.sendMessage(userInput, tools);
+      console.log('\n=== Agent Starting ===\n');
 
-      // Handle text response
-      if (response.text) {
-        console.log(`\nAssistant: ${response.text}\n`);
-      }
+      // Run agent
+      const result = await executor.run(userInput);
 
-      // Handle function calls
-      if (response.functionCalls && response.functionCalls.length > 0) {
-        console.log(`\n[Tool execution]`);
-
-        const functionResponses = [];
-
-        for (const fnCall of response.functionCalls) {
-          console.log(`  Calling ${fnCall.name}...`);
-
-          // Get tool from registry
-          const tool = registry.get(fnCall.name);
-
-          // Validate parameters
-          const validationError = tool.validate(fnCall.args ?? {});
-          if (validationError) {
-            console.error(`  ❌ Validation error: ${validationError}`);
-            functionResponses.push({
-              name: fnCall.name,
-              response: { error: validationError },
-            });
-            continue;
-          }
-
-          // Execute tool
-          const result = await tool.execute(fnCall.args ?? {});
-
-          if (result.success) {
-            console.log(`  ✓ Success`);
-            functionResponses.push({
-              name: fnCall.name,
-              response: { output: result.output },
-            });
-          } else {
-            console.error(`  ❌ Error: ${result.error}`);
-            functionResponses.push({
-              name: fnCall.name,
-              response: { error: result.error },
-            });
-          }
-        }
-
-        // Send function results back to model
-        const finalResponse = await client.sendFunctionResults(
-          functionResponses,
-          tools
-        );
-
-        if (finalResponse.text) {
-          console.log(`\nAssistant: ${finalResponse.text}\n`);
-        }
-      }
+      // Display results
+      console.log('\n=== Agent Finished ===');
+      console.log(`Result: ${result.result}`);
+      console.log(`Reason: ${result.terminateReason}`);
+      console.log(`Turns: ${result.turnCount}`);
+      console.log(`Time: ${(result.timeMs / 1000).toFixed(2)}s\n`);
     } catch (error) {
       console.error(
         `\nError: ${error instanceof Error ? error.message : String(error)}\n`
